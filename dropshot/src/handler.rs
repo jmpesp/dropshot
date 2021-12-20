@@ -74,6 +74,7 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::collections::HashMap;
 
 /**
  * Type alias for the result returned by HTTP handler functions.
@@ -1029,6 +1030,69 @@ impl UntypedBody {
                 format!("failed to parse body as UTF-8 string: {}", e),
             )
         })
+    }
+
+    pub fn as_form_data(&self) -> Result<HashMap<String,String>, HttpError> {
+        let mut result = HashMap::new();
+        let lines: Vec<&str> = self.as_str()?.split("\r\n").collect();
+
+        let boundary = lines[0];
+        if !boundary.starts_with("--------------------------") {
+            return Err(HttpError::for_bad_request(
+                None,
+                format!("bad boundary: {}", boundary),
+            ));
+        }
+
+        let mut i = 1;
+
+        loop {
+            if !lines[i].starts_with("Content-Disposition: form-data; name=\"") {
+                return Err(HttpError::for_bad_request(
+                    None,
+                    format!("bad content disposition: {}", lines[i]),
+                ));
+            }
+
+            let name = lines[i].split('"').collect::<Vec<&str>>()[1];
+
+            i += 1;
+
+            if lines[i].len() != 0 {
+                return Err(HttpError::for_bad_request(
+                    None,
+                    format!("no spacer: {}", lines[i]),
+                ));
+            }
+
+            i += 1;
+
+            let value = percent_encoding::percent_decode_str(lines[i])
+                .decode_utf8()
+                .map_err(|e| HttpError::for_bad_request(
+                    None,
+                    format!("percent decode error: {:?}", e),
+                ))?;
+
+            let _existing = result.insert(name.into(), value.into());
+
+            i += 1;
+
+            if !lines[i].starts_with(boundary) {
+                return Err(HttpError::for_bad_request(
+                    None,
+                    format!("expecting boundary: {}", lines[i]),
+                ));
+            }
+
+            if lines[i] == format!("{}--", boundary) {
+                break;
+            }
+
+            i += 1;
+        }
+
+        Ok(result)
     }
 }
 
